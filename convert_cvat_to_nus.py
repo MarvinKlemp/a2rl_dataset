@@ -27,7 +27,13 @@ def detection_json_to_map(detections, filename):
     with open(file=filename, mode="r") as fp:
         datumaro = json.load(fp)
 
-    detections[log][team][scene] = {}
+    if log not in detections:
+        detections[log] = {}
+    if team not in detections[log]:
+        detections[log][team] = {}
+    if scene not in detections[log][team]:
+        detections[log][team][scene] = {}
+    
     for frame in datumaro["items"]:
         detections[log][team][scene][frame["id"]] = [{"id": annotation["id"], "position": annotation["position"], "size": annotation["scale"], "yaw": annotation["rotation"][2]} for annotation in frame["annotations"]]
 
@@ -63,7 +69,7 @@ def generate_sample(scene_token, timestamp):
     return {
         "token": generate_unique_token(),
         "scene_token": scene_token,
-        "timestamp": timestamp,
+        "timestamp": int(timestamp),
         "next": "",
         "prev": ""
     }
@@ -73,7 +79,7 @@ def generate_sample_annotation(sample_token, annotation):
         "token": generate_unique_token(),
         "sample_token": sample_token,
         "instance_token": get_instance_token(INSTANCE_MAP, annotation["id"]),
-        "annotation_id": annotation["id"], # this is a custom field and is just there to match instances to sample_annotations -> its badly implemented tbh
+        "annotation_id": annotation["id"], # this is a custom field. It is required to match instances to sample_annotations
         "prev": "",
         "next": "",
         "attribute_tokens": [],
@@ -81,8 +87,8 @@ def generate_sample_annotation(sample_token, annotation):
         "translation": annotation["position"],
         "size": [annotation["size"][1], annotation["size"][0], annotation["size"][2]], # flip annotation sizes to match NUS format
         "rotation": Quaternion(axis=[0, 0, 1], angle=annotation["yaw"]).q.tolist(),
-        "num_lidar_pts": 0,
-        "num_radar_pts": 0
+        "num_lidar_pts": 1, # OpenPCDet requires to have at least 1 lidar_pts in the box. @todo: calculate the number points and store here
+        "num_radar_pts": 1
     }
 
 
@@ -92,12 +98,12 @@ def generate_sample_data(sample_token, team_name, ego_pose_token, calibrated_sen
         "sample_token": sample_token,
         "ego_pose_token": ego_pose_token,
         "calibrated_sensor_token": calibrated_sensor_token,
-        "timestamp": timestamp,
+        "timestamp": int(timestamp),
         "fileformat": "pcd",
         "is_key_frame": True,
         "height": 0,
         "width": 0,
-        "filename": f"samples/LIDAR/LIDAR_{team_name}_{timestamp}.pcd.bin",
+        "filename": f"samples/LIDAR_TOP/LIDAR_TOP_{team_name}_{timestamp}{FILE_FORMAT}",
         "prev": "",
         "next": ""
     }
@@ -105,7 +111,7 @@ def generate_sample_data(sample_token, team_name, ego_pose_token, calibrated_sen
 def generate_ego_pose(timestamp, translation, rotation):
     return {
         "token": generate_unique_token(),
-        "timestamp": timestamp,
+        "timestamp": int(timestamp),
         "rotation": rotation,
         "translation": translation
     }
@@ -152,20 +158,25 @@ def generate_instances(samples_annotations, racecar_category_token):
     return instances
 
 
-def load_transform_save_lidar_data(path_data, path_output, log, scene, team, filename):
-    # not the most beautiful way but filename is already in sample/...
-    original_filename = filename.split(os.path.sep)[-1].split("_")[-1][:-4]
-    pcd = o3d.io.read_point_cloud(os.path.join(path_data, log, team, scene, original_filename))
+def save_lidar_data(path_data, path_output, log, scene, team, filename):
+    # @todo: assume timestamp data is correct here
     
-    points = np.asarray(pcd.points)
-    points_nus = np.zeros([points.shape[0], 5], dtype=np.float32)
-    points_nus[:, :points.shape[1]] = points
+    original_filename = filename.split(os.path.sep)[-1].split("_")[-1][:-4] # remove .bin at the end as pointclouds are in .pcd originally
+    original_path = os.path.join(path_data, "lidar", log, team, scene, original_filename)
+    if not os.path.exists(original_path):
+        raise IOError(f"Pointcloud {original_path} not found")
     
+    pcl = o3d.t.io.read_point_cloud(original_path)
+    positions = pcl.point["positions"].numpy()
+    intensities = pcl.point["intensities"].numpy()
+    pcl_nus = np.zeros([positions.shape[0], 5], dtype=np.float32)
+    pcl_nus[:, :3] = positions
+    pcl_nus[:, 3] = intensities[:, 0]
     
-    file_path = os.path.join(path_output, filename)
+    file_path = os.path.join(path_output, f"{filename}.bin") # add .bin again at the end
     os.makedirs(os.path.dirname(file_path), exist_ok=True) 
     with open(file_path, "wb") as fp:
-       points_nus.tofile(fp)
+       pcl_nus.tofile(fp)
 
 
 def detections_to_nuscenes(detections, path_json, path_data, path_output):
@@ -173,8 +184,8 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
     calibrated_sensors = []
     categories = [{
         "token": generate_unique_token(),
-        "name": "racecar",
-        "description": "A racecar participating in the A2RL competition."
+        "name": "vehicle.car",
+        "description": "A car, in this domain mostly a racecar."
     }]
     ego_poses = []
     instances = []
@@ -182,7 +193,7 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
     maps = [{
         "category": "semantic_prior",
         "token": "53992ee3023e5494b90c316c183be829",
-        "filename": "maps/53992ee3023e5494b90c316c183be829.png",
+        "filename": "maps/53992ee3023e5494b90c316c183be829.png", # @todo: generate image from gnss path from TUM
         "log_tokens": []
     },]
     samples = []
@@ -196,12 +207,12 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
     sensors = [
         {
             "token": sensor_lidar_vehicle_token,
-            "channel": "LIDAR_VEHICLE",
+            "channel": "LIDAR_TOP",
             "modality": "lidar"
         },
         {
             "token": sensor_radar_vehicle_token,
-            "channel": "RADAR_VEHICLE",
+            "channel": "RADAR_TOP",
             "modality": "radar"
         },
     ]
@@ -213,17 +224,21 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
 
 
     for log, teams in detections.items():
-        print(f"Extracting {log}")
-        for team, log_scenes in tqdm(teams.items()):
+        print(f"Processing {log}")
+        for team, log_scenes in teams.items():
+            print(f"Processing team {team}")
             log = generate_log(log, team)
             logs.append(log)
-            for scene, frames in log_scenes.items():
+            for scene, frames in tqdm(log_scenes.items()):
                 scene = generate_scene(scene, log["date_captured"], team, len(frames))
 
                 scene_samples = []
                 scene_sample_annotations = []
                 scene_sample_data = []
                 for sample_idx, (timestamp, frame) in enumerate(frames.items()):
+                    # only required if timestamp is split by _
+                    timestamp = timestamp.replace("_", "")
+                    
                     #
                     # Generate Samples
                     #
@@ -231,6 +246,8 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                     if len(scene_samples) > 0:
                         sample["prev"] = scene_samples[sample_idx - 1]["token"]
                         scene_samples[-1]["next"] = sample["token"]
+                    if len(scene_samples) == 0:
+                        scene["first_sample_token"] = sample["token"]
                     scene_samples.append(sample)
 
                     #
@@ -272,8 +289,8 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                     scene_sample_data.append(sample_data)
 
                     # Move LiDAR data
-                    load_transform_save_lidar_data(path_data, path_output, log["date_captured"], scene["name"], team, sample_data["filename"])
-                    
+                    save_lidar_data(path_data, path_output, log["date_captured"], scene["name"], team, sample_data["filename"])
+                scene["last_sample_token"] = sample["token"]
 
                 # @TODO: Add Sample Data + other related json for Radar and Camera 
                 #    -> go through files in a loop and add them later on per scene
@@ -315,20 +332,26 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
     with open(os.path.join(path_json, "visibility.json"), 'w') as json_file:
         json.dump(visibility, json_file, indent=2)
 
-
+    #
+    #
+    #
+    print("------------------- Summary ---------------------")
+    print(f"Logs: {len(logs)}")
+    print(f"Scenes: {len(scenes)}")
+    print(f"Frames: {len(samples)}")
+    print(f"Tracks: {len(instances)}")
+    print(f"Annotations: {len(samples_annotations)}")
 if __name__ == "__main__":
     import random
     random.seed(42)
 
-    annotations_path = "/home/marvin/dev/aipex/dataset/dataset/data/scene"
-    path_data = "/home/marvin/dev/aipex/dataset/dataset/data/sensors"
-    path_output = "/home/marvin/dev/aipex/dataset/dataset/data/v1.0-mini"
+    annotations_path = "./data/scene"
+    path_data = "./data/sensors"
+    path_output = "./data/v1.0-mini"
 
+
+    FILE_FORMAT = ".pcd.bin"
     detections = {
-        "race_1": {
-            "tum": {},
-            "c19": {},
-        }
     }
     for datumaro_filepath in sorted(glob(f"{annotations_path}/*/*/*.json")):
         detection_json_to_map(detections, datumaro_filepath)
