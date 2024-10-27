@@ -35,7 +35,7 @@ def detection_json_to_map(detections, filename):
         detections[log][team][scene] = {}
     
     for frame in datumaro["items"]:
-        detections[log][team][scene][frame["id"]] = [{"id": annotation["id"], "position": annotation["position"], "size": annotation["scale"], "yaw": annotation["rotation"][2]} for annotation in frame["annotations"]]
+        detections[log][team][scene][frame["id"]] = [{"id": annotation["id"], "position": annotation["position"], "size": annotation["scale"], "yaw": annotation["rotation"][2], "visible": not annotation["attributes"]["occluded"]} for annotation in frame["annotations"]]
 
     return detections
 
@@ -74,11 +74,11 @@ def generate_sample(scene_token, timestamp):
         "prev": ""
     }
 
-def generate_sample_annotation(sample_token, annotation):
+def generate_sample_annotation(sample_token, annotation, instance_map):
     return {
         "token": generate_unique_token(),
         "sample_token": sample_token,
-        "instance_token": get_instance_token(INSTANCE_MAP, annotation["id"]),
+        "instance_token": get_instance_token(instance_map, annotation["id"]),
         "annotation_id": annotation["id"], # this is a custom field. It is required to match instances to sample_annotations
         "prev": "",
         "next": "",
@@ -126,7 +126,7 @@ def generate_calibrated_sensor(sensor_token, translation, rotation, camera_intri
         "camera_intrinsic": camera_intrinsic
     }
 
-INSTANCE_MAP = {}
+
 def get_instance_token(map, id):
     if id not in map:
         map[id] = generate_unique_token()
@@ -142,13 +142,13 @@ def find_last_sample_annotation(samples_annotations, token):
     return None
 
 
-def generate_instances(samples_annotations, racecar_category_token):
+def generate_instances(samples_annotations, racecar_category_token, instance_map):
     samples_annotations.sort(key=itemgetter('instance_token'))
     grouped_objects = {k: list(v) for k, v in groupby(samples_annotations, key=itemgetter('instance_token'))}
     instances = []
     for _, group in grouped_objects.items():
         instances.append({
-            "token": get_instance_token(INSTANCE_MAP, group[0]["annotation_id"]),
+            "token": get_instance_token(instance_map, group[0]["annotation_id"]),
             "category_token": racecar_category_token,
             "nbr_annotations": len(group),
             "first_annotation_token": group[0]["token"],
@@ -230,6 +230,7 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
             log = generate_log(log, team)
             logs.append(log)
             for scene, frames in tqdm(log_scenes.items()):
+                instance_map = {}
                 scene = generate_scene(scene, log["date_captured"], team, len(frames))
 
                 scene_samples = []
@@ -254,7 +255,10 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                     # Generate Annotations
                     #
                     for annotation in frame:
-                        sample_annotation = generate_sample_annotation(sample["token"], annotation)
+                        if not annotation["visible"]:
+                            continue
+
+                        sample_annotation = generate_sample_annotation(sample["token"], annotation, instance_map)
                         last_sample_annotation = find_last_sample_annotation(scene_sample_annotations, sample_annotation["instance_token"])
                         if last_sample_annotation:
                             sample_annotation["prev"] = last_sample_annotation["token"]
@@ -294,7 +298,7 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
 
                 # @TODO: Add Sample Data + other related json for Radar and Camera 
                 #    -> go through files in a loop and add them later on per scene
-                instances.extend(generate_instances(scene_sample_annotations, categories[0]["token"]))
+                instances.extend(generate_instances(scene_sample_annotations, categories[0]["token"], instance_map))
                 scenes.append(scene)
                 samples.extend(scene_samples)
                 samples_annotations.extend(scene_sample_annotations)
