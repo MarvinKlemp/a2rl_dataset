@@ -173,7 +173,7 @@ def save_lidar_data(path_data, path_output, log, scene, team, filename):
     pcl_nus[:, :3] = positions
     pcl_nus[:, 3] = intensities[:, 0]
     
-    file_path = os.path.join(path_output, f"{filename}.bin") # add .bin again at the end
+    file_path = os.path.join(path_output, f"{filename}")
     os.makedirs(os.path.dirname(file_path), exist_ok=True) 
     with open(file_path, "wb") as fp:
        pcl_nus.tofile(fp)

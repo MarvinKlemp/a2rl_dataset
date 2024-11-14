@@ -32,7 +32,7 @@ vis.get_render_option().background_color = np.zeros(3)
 
 pred_labels = None
 
-DATA_SET_PATH = pathlib.Path("v1.0-mini")
+DATA_SET_PATH = pathlib.Path("./data/v1.0-mini")
 
 nusc = NuScenes(version='v1.0-mini', dataroot=DATA_SET_PATH, verbose=True)
 
