@@ -43,14 +43,14 @@ def detection_json_to_map(detections, filename):
 def generate_unique_token():
     return uuid.uuid4().hex
 
-def generate_log(log, team):
+def generate_log(log_name, team):
     """ Generate one log per session
     """
     return {
         'token': generate_unique_token(),
         "logfile": "", #@TODO
         "vehicle": team,
-        "date_captured": log, # @TODO use this as specification when it was?
+        "date_captured": log_name, # @TODO use this as specification when it was?
         "location": f"Yas Marina Circuit",
     }
 
@@ -168,7 +168,12 @@ def save_lidar_data(path_data, path_output, log, scene, team, filename):
     
     pcl = o3d.t.io.read_point_cloud(original_path)
     positions = pcl.point["positions"].numpy()
-    intensities = pcl.point["intensities"].numpy()
+    # quick fix
+    if "intensity" in pcl.point:
+        intensities = pcl.point["intensity"].numpy()
+    else:
+        intensities = pcl.point["intensities"].numpy()
+
     pcl_nus = np.zeros([positions.shape[0], 5], dtype=np.float32)
     pcl_nus[:, :3] = positions
     pcl_nus[:, 3] = intensities[:, 0]
@@ -223,11 +228,15 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
     }]
 
 
-    for log, teams in detections.items():
-        print(f"Processing {log}")
+    for log_name, teams in detections.items():
+        print(f"Processing {log_name}")
         for team, log_scenes in teams.items():
+            # just for development
+            # if team != "pol":
+            #     continue
+
             print(f"Processing team {team}")
-            log = generate_log(log, team)
+            log = generate_log(log_name, team)
             logs.append(log)
             for scene, frames in tqdm(log_scenes.items()):
                 instance_map = {}
@@ -237,6 +246,27 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                 scene_sample_annotations = []
                 scene_sample_data = []
                 for sample_idx, (timestamp, frame) in enumerate(frames.items()):
+                    # There is some weird bug with the constructor data
+                    # In the beginning it sometimes has a gap of 1 plc
+                    if sample_idx == 0:
+                        ts_0 = int(list(frames.keys())[0].replace("_", ""))
+                        ts_1 = int(list(frames.keys())[1].replace("_", ""))
+                        if ts_1 - ts_0 >= 200000000:
+                            # skip this iteration, it would not affect detection, but it would affect tracking
+                            print(f"Initial skip detected for: {scene['name']}")
+                            continue
+   
+                    #
+                    # Furthermore, there is another minor weird problem. Sometimes, one pcl is missing at the end
+                    # if that is the case, we end the scene without this sample.
+                    # This is mainly in sections there were shorter than 10s
+                    # this is a little bit ugly codewise, but is does its job
+                    #
+                    original_path = os.path.join(path_data, "lidar", log["date_captured"], team, scene["name"], f"{timestamp.replace('_', '')}.pcd")
+                    if not os.path.exists(original_path):
+                        print(f"After sample idx {sample_idx} pointcloud {original_path} not found")
+                        break
+
                     # only required if timestamp is split by _
                     timestamp = timestamp.replace("_", "")
                     
@@ -245,7 +275,7 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                     #
                     sample = generate_sample(scene["token"], timestamp)
                     if len(scene_samples) > 0:
-                        sample["prev"] = scene_samples[sample_idx - 1]["token"]
+                        sample["prev"] = scene_samples[-1]["token"]
                         scene_samples[-1]["next"] = sample["token"]
                     if len(scene_samples) == 0:
                         scene["first_sample_token"] = sample["token"]
@@ -271,7 +301,6 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
                     #
                     # We define all LiDAR frames as key frames. Radar / Camera are associated to closest
                     #
-
                     ego_pose = generate_ego_pose(timestamp, translation=vehicle_translation, rotation=vehicle_rotation) # @TODO: gnss values?
                     ego_poses.append(ego_pose)
 
@@ -294,6 +323,7 @@ def detections_to_nuscenes(detections, path_json, path_data, path_output):
 
                     # Move LiDAR data
                     save_lidar_data(path_data, path_output, log["date_captured"], scene["name"], team, sample_data["filename"])
+
                 scene["last_sample_token"] = sample["token"]
 
                 # @TODO: Add Sample Data + other related json for Radar and Camera 
