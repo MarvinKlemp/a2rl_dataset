@@ -176,6 +176,15 @@ def save_lidar_data(path_data, path_output, log, scene, team, filename):
 
     pcl_nus = np.zeros([positions.shape[0], 5], dtype=np.float32)
     pcl_nus[:, :3] = positions
+
+    # Different teams have different intensity scales
+    if INTENSITY_SCALE == 1:
+        if intensities[:, 0].max() > 1.0 + 1e06:
+            intensities = intensities / 255
+    if INTENSITY_SCALE == 255:
+        if intensities[:, 0].max() < 1.0 + 1e06:
+            intensities = intensities * 255
+            intensities = np.round(intensities)
     pcl_nus[:, 3] = intensities[:, 0]
     
     file_path = os.path.join(path_output, f"{filename}")
@@ -383,7 +392,7 @@ if __name__ == "__main__":
     path_data = "./data/sensors"
     path_output = "./data/v1.0-mini"
 
-
+    INTENSITY_SCALE = 1
     FILE_FORMAT = ".pcd.bin"
     detections = {
     }
